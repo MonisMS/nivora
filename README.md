@@ -1,6 +1,6 @@
 # Nivora
 
-**The autonomous agent that files, tracks, and escalates civic grievances until they're resolved.**
+**Your AI advocate that monitors, follows up, and escalates civic grievances — so you never have to chase the government again.**
 
 > APL Qualifiers — Round 1 · Problem Statement **PS-07: Jansunwai grievance resolution agent**
 
@@ -9,15 +9,17 @@
 ## Team
 
 - **Team Name:** NULL
-- **Member:** Monis Sarwar ([@your-github-handle](https://github.com/your-github-handle))
+- **Member:** Monis Sarwar ([@MonisMS](https://github.com/MonisMS))
 
 ## What is Nivora?
 
-Nivora is an autonomous AI agent for civic grievance redressal, modeled on UP's Jansunwai/IGRS public complaint system. A citizen files a complaint in Hindi or English; the agent classifies its category and severity, routes it to the correct department with a service-level deadline (SLA), and monitors resolution. When a department misses its SLA, Nivora **escalates on its own** — re-drafting a firmer complaint to a higher authority and notifying the citizen in their own language at every step. No human presses "escalate."
+Nivora is an autonomous AI middleware layer — a **citizen's advocate** sitting on top of UP's existing Jansunwai/IGRS grievance system. A citizen files their complaint on Jansunwai as usual, then hands the reference number to Nivora. That's all they do. Nivora takes over from there: it monitors the complaint, tracks the SLA deadline, and when a department ignores it, **escalates automatically** — re-drafting a firmer complaint to a higher authority and notifying the citizen in vernacular Hindi at every step.
+
+**Nivora does not replace Jansunwai. It adds autonomous intelligence on top of it.**
 
 ## Problem Statement (PS-07)
 
-UP's Jansunwai portal receives millions of complaints, but the only follow-up mechanism is a manual "reminder" button — the citizen has to chase their own complaint. Grievances are frequently closed without being resolved, routed to the wrong department, and updated only in English. Nivora closes this gap with an agent that proactively tracks, escalates, and communicates in vernacular Hindi.
+UP's Jansunwai portal receives millions of complaints, but resolution is slow and opaque. The portal's only follow-up mechanism is a manual "reminder" button — the burden of chasing falls entirely on the citizen. Complaints are frequently closed without being resolved, routed to the wrong department, and communicated only in English that rural and elderly citizens can't read. Nivora closes this gap by sitting as an intelligent agent layer on top of the existing system — proactively monitoring, escalating, and communicating so the citizen doesn't have to.
 
 ## Why it's a real agent (not a chatbot)
 
@@ -52,7 +54,7 @@ pnpm install
 # OPENAI_API_KEY=sk-...
 # DATABASE_URL=postgresql://...   (Neon connection string)
 
-pnpm drizzle-kit push    # create the schema on Neon
+pnpm db:push             # create the schema on Neon
 pnpm dev                 # http://localhost:3000
 ```
 
