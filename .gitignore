@@ -44,3 +44,7 @@ AGENTS.md
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# AI tooling artifacts
+.agents/
+skills-lock.json

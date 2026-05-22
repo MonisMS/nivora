@@ -75,6 +75,7 @@ export function getSlaMs(category: string, severity: string): number {
 
 export function generateRefNumber(): string {
   const year = new Date().getFullYear();
-  const seq = Math.floor(1000 + Math.random() * 9000);
+  // Time-based suffix avoids collisions on the unique refNumber column.
+  const seq = (Date.now() % 100000).toString().padStart(5, "0");
   return `UP-LKO-${year}-${seq}`;
 }

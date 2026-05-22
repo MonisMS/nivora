@@ -49,7 +49,8 @@ async function runToolLoop(
       try {
         const args = JSON.parse(call.function.arguments || "{}") as Record<string, unknown>;
         result = await onToolCall(call.function.name, args);
-      } catch {
+      } catch (e) {
+        console.error("[agent] tool handler error:", e);
         result = { error: "parse or handler error" };
       }
       messages.push({
@@ -69,9 +70,9 @@ export async function fileComplaint(text: string) {
 
   let category = "other";
   let severity = "medium";
-  let department = DEPT_MAP.other.dept;
-  let departmentHindi = DEPT_MAP.other.hindi;
-  let slaHours = 168;
+  let department: string | null = null;
+  let departmentHindi: string | null = null;
+  let slaHours: number | null = null;
 
   const messages: ChatCompletionMessageParam[] = [
     {
@@ -90,13 +91,23 @@ Both tool calls are required. Do not respond with plain text.`,
       return { success: true, category, severity };
     }
     if (name === "route_to_department") {
-      department = args.department as string;
-      departmentHindi = args.departmentHindi as string;
-      slaHours = (args.slaHours as number) ?? getSlaMs(category, severity) / 3600000;
+      if (typeof args.department === "string") department = args.department;
+      if (typeof args.departmentHindi === "string") departmentHindi = args.departmentHindi;
+      const h = Number(args.slaHours);
+      if (Number.isFinite(h) && h > 0) slaHours = h;
       return { success: true, department, slaHours };
     }
     return { error: "unknown tool" };
   });
+
+  // Department is authoritative from DEPT_MAP — never trust the model's
+  // free-text routing (it invents generic names like "Electricity Department"
+  // instead of the real Lucknow body). The model still drives classification
+  // and may suggest an SLA, but the actual civic routing is deterministic.
+  const deptInfo = DEPT_MAP[category] ?? DEPT_MAP.other;
+  department = deptInfo.dept;
+  departmentHindi = deptInfo.hindi;
+  if (slaHours === null) slaHours = getSlaMs(category, severity) / 3600000;
 
   const slaDeadlineMs = (now + slaHours * 3600 * 1000).toString();
   const hindiAck = `आपकी शिकायत दर्ज कर ली गई है। संदर्भ संख्या: ${refNumber}।\nयह शिकायत "${departmentHindi}" को भेज दी गई है। निर्धारित समय: ${slaHours} घंटे।`;
@@ -168,14 +179,20 @@ Reference: ${complaint.refNumber}`,
 
   await runToolLoop(messages, escalateTools, async (name, args) => {
     if (name === "escalate_grievance") {
-      escalatedTo = args.escalatedTo as string;
-      escalatedToHindi = args.escalatedToHindi as string;
-      firmerText = args.firmerText as string;
-      hindiUpdate = args.hindiUpdate as string;
+      if (typeof args.escalatedTo === "string") escalatedTo = args.escalatedTo;
+      if (typeof args.escalatedToHindi === "string") escalatedToHindi = args.escalatedToHindi;
+      if (typeof args.firmerText === "string") firmerText = args.firmerText;
+      if (typeof args.hindiUpdate === "string") hindiUpdate = args.hindiUpdate;
       return { success: true };
     }
     return { error: "unknown tool" };
   });
+
+  // Never wipe the citizen-facing Hindi message with an empty string if the
+  // model skipped the tool — fall back to a generated escalation notice.
+  if (!hindiUpdate.trim()) {
+    hindiUpdate = `सूचना: आपकी शिकायत (${complaint.refNumber}) निर्धारित समय में हल नहीं हुई। इसे उच्च अधिकारी (${escalatedToHindi}) को स्वतः अग्रेषित कर दिया गया है।`;
+  }
 
   await db
     .update(complaints)

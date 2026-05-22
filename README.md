@@ -38,12 +38,26 @@ Every decision is shown in a live **Agent Decision Log** (observed → decided �
 - **Framework:** Next.js 16 (App Router) + TypeScript
 - **Database:** Neon (serverless Postgres) + Drizzle ORM
 - **AI / Agent:** OpenAI API (function/tool calling) — classification, escalation re-drafting, vernacular Hindi generation
-- **UI:** Tailwind CSS + lucide-react
+- **UI:** Tailwind CSS v4 + shadcn/ui + lucide-react
 
 ### AI tools disclosure (Rule 4.2)
 
 - **OpenAI API** — powers the agent's reasoning, classification, complaint re-drafting, and Hindi text generation.
-- **Claude Code** — used as a development assistant during the build.
+- **Claude Code** (with Anthropic's `frontend-design` skill) — used as a development assistant during the build.
+
+## Project Structure
+
+```
+app/
+  api/            agent + clock endpoints (complaints, advance-clock, dashboard, seed, reset)
+  page.tsx        operations dashboard (intake, grievance queue, decision log)
+lib/
+  agent/          OpenAI tool-calling loop — fileComplaint, escalateComplaint
+  clock.ts        virtual clock + SLA-breach escalation trigger
+  schema.ts       Drizzle schema (complaints, decision_log, app_state)
+  seed.ts         15 sample Lucknow grievances
+  utils.ts        DEPT_MAP (authoritative department routing) + helpers
+```
 
 ## Setup / Run
 

@@ -3,8 +3,10 @@ import { db } from "@/lib/db";
 import { appState, complaints } from "@/lib/schema";
 import { eq, inArray } from "drizzle-orm";
 
+// Always read/write the lowest-id row so reads and writes target the same
+// row even if a stray duplicate ever lands in app_state.
 async function getOffset(): Promise<number> {
-  const rows = await db.select().from(appState).limit(1);
+  const rows = await db.select().from(appState).orderBy(appState.id).limit(1);
   if (!rows.length) {
     await db.insert(appState).values({ clockOffsetMs: "0" });
     return 0;
@@ -13,7 +15,7 @@ async function getOffset(): Promise<number> {
 }
 
 async function upsertOffset(newOffset: number): Promise<void> {
-  const existing = await db.select().from(appState).limit(1);
+  const existing = await db.select().from(appState).orderBy(appState.id).limit(1);
   if (existing.length) {
     await db
       .update(appState)
@@ -48,11 +50,10 @@ export async function advanceClock(hours: number = 24): Promise<{
   // Lazy import breaks the run.ts ↔ clock.ts circular dependency
   const { escalateComplaint } = await import("@/lib/agent/run");
 
-  const escalated: number[] = [];
-  for (const c of breached) {
-    await escalateComplaint(c.id);
-    escalated.push(c.id);
-  }
+  // Escalate in parallel — each is an independent OpenAI round-trip, so running
+  // them sequentially makes a multi-breach advance feel like it's hung.
+  await Promise.all(breached.map((c) => escalateComplaint(c.id)));
+  const escalated = breached.map((c) => c.id);
 
   return { newOffsetHours: Math.round(newOffset / 3600000), escalated };
 }

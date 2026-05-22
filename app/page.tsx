@@ -1,18 +1,9 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import { Badge } from "@/components/ui/badge";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-} from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import { Separator } from "@/components/ui/separator";
-import {
-  AlertTriangle, Clock, Send, RotateCcw, Database,
-  TrendingUp, Timer, Activity,
-} from "lucide-react";
+import { Clock, RotateCcw, Database, Timer } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type Complaint = {
@@ -47,35 +38,37 @@ type DashboardData = {
   clockOffsetHours: number;
 };
 
-const statusConfig: Record<string, { label: string; className: string }> = {
-  pending:   { label: "Pending",   className: "bg-amber-500/15 text-amber-400 border-amber-500/30" },
-  escalated: { label: "Escalated", className: "bg-red-500/15 text-red-400 border-red-500/30" },
-  resolved:  { label: "Resolved",  className: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30" },
+const statusConfig: Record<string, { label: string; dot: string; text: string; live?: boolean }> = {
+  pending:   { label: "Pending",   dot: "bg-muted-foreground",      text: "text-muted-foreground" },
+  escalated: { label: "Escalated", dot: "bg-alarm",                 text: "text-alarm", live: true },
+  resolved:  { label: "Resolved",  dot: "bg-relief",                text: "text-relief" },
 };
 
-const severityConfig: Record<string, { label: string; className: string }> = {
-  critical: { label: "Critical", className: "bg-red-500/20 text-red-300 border-red-500/40" },
-  high:     { label: "High",     className: "bg-orange-500/20 text-orange-300 border-orange-500/40" },
-  medium:   { label: "Medium",   className: "bg-yellow-500/20 text-yellow-300 border-yellow-500/40" },
-  low:      { label: "Low",      className: "bg-slate-500/20 text-slate-400 border-slate-500/30" },
+const severityDot: Record<string, string> = {
+  critical: "bg-alarm",
+  high:     "bg-signal",
+  medium:   "bg-muted-foreground/70",
+  low:      "bg-muted-foreground/40",
 };
 
-function StatusBadge({ status }: { status: string }) {
+function StatusPill({ status }: { status: string }) {
   const cfg = statusConfig[status] ?? statusConfig.pending;
   return (
-    <Badge variant="outline" className={cn("text-xs font-mono border", cfg.className)}>
+    <span className={cn("inline-flex items-center gap-1.5 text-xs font-medium", cfg.text)}>
+      <span className={cn("w-1.5 h-1.5 rounded-full", cfg.dot, cfg.live && "nv-live")} />
       {cfg.label}
-    </Badge>
+    </span>
   );
 }
 
-function SeverityBadge({ severity }: { severity: string }) {
-  const cfg = severityConfig[severity] ?? severityConfig.medium;
-  return (
-    <Badge variant="outline" className={cn("text-xs border", cfg.className)}>
-      {cfg.label}
-    </Badge>
-  );
+function slaLabel(deadlineMs: string, now: number): { text: string; tone: string } {
+  const deadline = Number(deadlineMs);
+  if (!Number.isFinite(deadline)) return { text: "—", tone: "text-muted-foreground" };
+  const diff = deadline - now;
+  const hrs = diff / 3_600_000;
+  if (diff <= 0) return { text: `Breached +${Math.abs(Math.round(hrs))}h`, tone: "text-alarm" };
+  if (hrs < 24) return { text: `${Math.round(hrs)}h left`, tone: "text-signal" };
+  return { text: `${Math.round(hrs / 24)}d left`, tone: "text-muted-foreground" };
 }
 
 export default function Home() {
@@ -86,13 +79,43 @@ export default function Home() {
   const [advancing, setAdvancing] = useState(false);
   const [lastAction, setLastAction] = useState<string | null>(null);
 
+  // Live virtual clock: server gives a snapshot; we extrapolate locally each
+  // second so SLA timers visibly tick during the demo.
+  const fetchedAt = useRef<number>(Date.now());
+  const [liveNow, setLiveNow] = useState<number>(Date.now());
+
   const load = useCallback(async () => {
-    const res = await fetch("/api/dashboard");
-    if (res.ok) setData(await res.json());
+    // Retry a few times: Neon's free-tier compute can cold-start on the first
+    // hit and time out, which would otherwise paint a blank dashboard.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const res = await fetch("/api/dashboard");
+        if (res.ok) {
+          const d: DashboardData = await res.json();
+          setData(d);
+          fetchedAt.current = Date.now();
+          setLiveNow(d.virtualNow);
+          break;
+        }
+      } catch {
+        // network/cold-start — fall through to retry
+      }
+      await new Promise(r => setTimeout(r, 1200));
+    }
     setLoading(false);
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    const t = setInterval(() => {
+      setData(d => {
+        if (d) setLiveNow(d.virtualNow + (Date.now() - fetchedAt.current));
+        return d;
+      });
+    }, 1000);
+    return () => clearInterval(t);
+  }, []);
 
   async function submitComplaint() {
     if (!complaintText.trim()) return;
@@ -107,7 +130,7 @@ export default function Home() {
       if (res.ok) {
         const c = await res.json();
         setComplaintText("");
-        setLastAction(`Filed: ${c.refNumber} — classified and routed by agent`);
+        setLastAction(`Filed ${c.complaint.refNumber} — classified and routed by the agent`);
         await load();
       }
     } finally {
@@ -126,7 +149,7 @@ export default function Home() {
       if (res.ok) {
         const r = await res.json();
         const n = r.escalated?.length ?? 0;
-        setLastAction(`Clock advanced +24h → ${n} complaint${n !== 1 ? "s" : ""} auto-escalated`);
+        setLastAction(`Advanced 24h — ${n} complaint${n !== 1 ? "s" : ""} auto-escalated`);
         await load();
       }
     } finally {
@@ -138,307 +161,233 @@ export default function Home() {
     const res = await fetch("/api/seed", { method: "POST" });
     if (res.ok) {
       const r = await res.json();
-      setLastAction(`Seeded ${r.seeded} complaints (${r.skipped} already existed)`);
+      setLastAction(`Seeded ${r.seeded} complaints`);
       await load();
     }
   }
 
   async function resetAll() {
     await fetch("/api/reset", { method: "POST" });
-    setLastAction("Database reset — all complaints and logs cleared");
+    setLastAction("Reset — all complaints and logs cleared");
     await load();
   }
 
-  const counts = data
+  const metrics = data
     ? {
         total:     data.complaints.length,
         pending:   data.complaints.filter(c => c.status === "pending").length,
         escalated: data.complaints.filter(c => c.status === "escalated").length,
         resolved:  data.complaints.filter(c => c.status === "resolved").length,
+        breached:  data.complaints.filter(
+          c => c.status !== "resolved" && Number(c.slaDeadlineMs) < liveNow
+        ).length,
       }
     : null;
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
-      {/* Dot-grid atmosphere */}
-      <div
-        className="fixed inset-0 pointer-events-none"
-        style={{
-          backgroundImage: "radial-gradient(circle, #1e293b 1px, transparent 1px)",
-          backgroundSize: "2rem 2rem",
-          opacity: 0.4,
-        }}
-      />
-
-      <div className="relative z-10 max-w-[1400px] mx-auto px-4 sm:px-6 py-6">
+    <div className="app-bg min-h-screen text-foreground">
+      <div className="max-w-[1320px] mx-auto px-6 py-6">
 
         {/* ── Header ──────────────────────────────────────────────────── */}
-        <header className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-8">
-          <div>
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-xl bg-amber-500 flex items-center justify-center shadow-lg shadow-amber-500/25">
-                <Activity className="w-4 h-4 text-slate-950" />
-              </div>
-              <div>
-                <h1 className="text-xl font-bold tracking-tight text-white leading-none">Nivora</h1>
-                <p className="text-slate-500 text-xs mt-0.5">Autonomous Grievance Agent · Lucknow, UP</p>
-              </div>
+        <header className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+          <div className="flex items-center gap-3">
+            <div className="grid place-items-center w-10 h-10 rounded-lg bg-card/70 border border-panel-border">
+              <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" aria-hidden>
+                <path d="M5 19V8l7-4 7 4v11" stroke="var(--signal)" strokeWidth="1.5" strokeLinejoin="round" />
+                <path d="M9 19v-5h6v5" stroke="var(--muted-foreground)" strokeWidth="1.5" strokeLinejoin="round" />
+                <circle cx="12" cy="9" r="1.4" fill="var(--signal)" />
+              </svg>
             </div>
-            <p className="text-slate-700 text-[10px] mt-2 font-mono">
-              APL Qualifiers 2026 · PS-07: Jansunwai Resolution
-            </p>
+            <div>
+              <h1 className="font-display font-semibold text-xl tracking-wide leading-none">Nivora</h1>
+              <p className="text-muted-foreground text-sm mt-1">
+                Autonomous grievance agent · Lucknow
+              </p>
+            </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-2">
             {data && (
-              <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 text-xs font-mono">
-                <Clock className="w-3 h-3 text-amber-400" />
-                <span className="text-amber-400 font-semibold">
-                  {data.clockOffsetHours >= 0 ? "+" : ""}{data.clockOffsetHours}h
+              <div className="flex items-center gap-2 px-3 h-9 rounded-md bg-card/60 border border-panel-border text-sm">
+                <Clock className="w-4 h-4 text-muted-foreground" />
+                <span className="text-muted-foreground">
+                  {new Date(liveNow).toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}
                 </span>
-                <span className="text-slate-600">·</span>
-                <span className="text-slate-400">
-                  {new Date(data.virtualNow).toLocaleDateString("en-IN", {
-                    day: "2-digit", month: "short", year: "numeric",
-                  })}
-                </span>
+                {data.clockOffsetHours !== 0 && (
+                  <span className="font-mono text-signal text-xs">+{data.clockOffsetHours}h</span>
+                )}
               </div>
             )}
-            <Button
-              variant="outline" size="sm" onClick={seedData}
-              className="bg-slate-900 border-slate-700 text-slate-400 hover:bg-slate-800 hover:text-white text-xs h-8"
-            >
-              <Database className="w-3 h-3 mr-1.5" /> Seed Demo
+            <Button variant="ghost" size="sm" onClick={seedData}
+              className="h-9 rounded-md text-muted-foreground hover:text-foreground hover:bg-card/60">
+              <Database className="w-4 h-4 mr-1.5" /> Seed
             </Button>
-            <Button
-              variant="outline" size="sm" onClick={resetAll}
-              className="bg-slate-900 border-slate-700 text-slate-400 hover:bg-slate-800 hover:text-white text-xs h-8"
-            >
-              <RotateCcw className="w-3 h-3 mr-1.5" /> Reset
+            <Button variant="ghost" size="sm" onClick={resetAll}
+              className="h-9 rounded-md text-muted-foreground hover:text-foreground hover:bg-card/60">
+              <RotateCcw className="w-4 h-4 mr-1.5" /> Reset
             </Button>
-            <Button
-              size="sm" onClick={advanceClock} disabled={advancing}
-              className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs h-8 shadow-lg shadow-amber-500/20"
-            >
-              <Timer className="w-3 h-3 mr-1.5" />
-              {advancing ? "Advancing…" : "Advance +24h"}
+            <Button size="sm" onClick={advanceClock} disabled={advancing}
+              className="h-9 rounded-md bg-signal hover:bg-signal/85 text-signal-foreground font-semibold glow-signal transition-colors disabled:opacity-70">
+              <Timer className="w-4 h-4 mr-1.5" />
+              {advancing ? "Advancing…" : "Advance 24h"}
             </Button>
           </div>
         </header>
 
-        {/* ── Stats row ───────────────────────────────────────────────── */}
-        {counts && (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
+        {/* ── System-state metrics strip ──────────────────────────────── */}
+        {metrics && (
+          <div className="surface rounded-xl grid grid-cols-2 sm:grid-cols-5 divide-x divide-panel-border/60 mb-6 overflow-hidden">
             {[
-              { label: "Total",     value: counts.total,     color: "text-slate-200" },
-              { label: "Pending",   value: counts.pending,   color: "text-amber-400" },
-              { label: "Escalated", value: counts.escalated, color: "text-red-400" },
-              { label: "Resolved",  value: counts.resolved,  color: "text-emerald-400" },
-            ].map(s => (
-              <div
-                key={s.label}
-                className="bg-slate-900 border border-slate-800 rounded-xl px-4 py-3"
-              >
-                <p className="text-slate-600 text-[10px] uppercase tracking-widest mb-1 font-mono">{s.label}</p>
-                <p className={cn("text-3xl font-bold font-mono leading-none", s.color)}>{s.value}</p>
+              { label: "Total filed", value: metrics.total,     accent: "bg-muted-foreground/40", tone: "text-foreground" },
+              { label: "Pending",     value: metrics.pending,   accent: "bg-muted-foreground",    tone: "text-foreground" },
+              { label: "SLA breached",value: metrics.breached,  accent: "bg-signal",              tone: metrics.breached ? "text-signal" : "text-foreground" },
+              { label: "Escalated",   value: metrics.escalated, accent: "bg-alarm",               tone: metrics.escalated ? "text-alarm" : "text-foreground" },
+              { label: "Resolved",    value: metrics.resolved,  accent: "bg-relief",              tone: "text-foreground" },
+            ].map(m => (
+              <div key={m.label} className="px-5 py-4">
+                <div className="flex items-center gap-2">
+                  <span className={cn("w-1.5 h-1.5 rounded-full", m.accent)} />
+                  <p className="text-muted-foreground text-xs">{m.label}</p>
+                </div>
+                <p className={cn("font-display font-semibold text-3xl tabular-nums leading-none mt-2", m.tone)}>
+                  {m.value}
+                </p>
               </div>
             ))}
           </div>
         )}
 
-        {/* ── Toast-style feedback ────────────────────────────────────── */}
-        {lastAction && (
-          <div className="mb-5 flex items-center gap-2 px-4 py-2.5 bg-amber-500/8 border border-amber-500/20 rounded-lg text-amber-300 text-xs font-mono">
-            <span className="text-amber-400">✓</span>
-            {lastAction}
-          </div>
-        )}
+        <div className="grid grid-cols-1 xl:grid-cols-[1fr_400px] gap-6 items-start">
 
-        {/* ── Main grid ───────────────────────────────────────────────── */}
-        <div className="grid grid-cols-1 xl:grid-cols-[1fr_400px] gap-5">
+          {/* ── Left column ───────────────────────────────────────────── */}
+          <div className="flex flex-col gap-6">
 
-          {/* Left column */}
-          <div className="flex flex-col gap-5">
-
-            {/* File complaint */}
-            <Card className="bg-slate-900 border-slate-800">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-xs font-semibold text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                  <Send className="w-3.5 h-3.5 text-amber-400" />
-                  File a Grievance
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <Textarea
-                  placeholder="Describe your complaint in English or Hindi/Hinglish — e.g. &quot;Nala Road mein paani bhar gaya, ek hafte se koi action nahi…&quot;"
-                  value={complaintText}
-                  onChange={e => setComplaintText(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submitComplaint();
-                  }}
-                  rows={3}
-                  className="bg-slate-950 border-slate-700 text-slate-200 placeholder:text-slate-600 resize-none text-sm focus-visible:ring-amber-500/30 focus-visible:border-amber-500/40"
-                />
-                <div className="flex items-center justify-between mt-3">
-                  <span className="text-slate-700 text-[10px] font-mono">⌘+Enter to submit</span>
-                  <Button
-                    onClick={submitComplaint}
-                    disabled={submitting || !complaintText.trim()}
-                    className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs h-8 px-4"
-                  >
-                    {submitting ? "Agent processing…" : "Submit to Nivora"}
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* Complaints table */}
-            <Card className="bg-slate-900 border-slate-800">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-xs font-semibold text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                  <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
-                  Active Grievances
-                  {counts && (
-                    <span className="ml-auto font-mono text-[10px] text-slate-600 normal-case font-normal">
-                      {counts.total} total
-                    </span>
-                  )}
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="p-0">
-                {loading ? (
-                  <p className="text-slate-600 text-sm text-center py-12 font-mono">Loading…</p>
-                ) : !data?.complaints.length ? (
-                  <p className="text-slate-600 text-sm text-center py-12 px-4">
-                    No complaints yet.{" "}
-                    <button onClick={seedData} className="text-amber-400 hover:underline">
-                      Seed demo data
-                    </button>{" "}
-                    to load 15 sample grievances.
-                  </p>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <Table>
-                      <TableHeader>
-                        <TableRow className="border-slate-800 hover:bg-transparent">
-                          <TableHead className="text-slate-600 text-[10px] font-mono uppercase tracking-wider pl-5">Ref</TableHead>
-                          <TableHead className="text-slate-600 text-[10px] font-mono uppercase tracking-wider">Category</TableHead>
-                          <TableHead className="text-slate-600 text-[10px] font-mono uppercase tracking-wider">Severity</TableHead>
-                          <TableHead className="text-slate-600 text-[10px] font-mono uppercase tracking-wider">Status</TableHead>
-                          <TableHead className="text-slate-600 text-[10px] font-mono uppercase tracking-wider">Department</TableHead>
-                          <TableHead className="text-slate-600 text-[10px] font-mono uppercase tracking-wider hidden lg:table-cell">Complaint</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {data.complaints.map(c => (
-                          <TableRow key={c.id} className="border-slate-800 hover:bg-slate-800/40">
-                            <TableCell className="pl-5 py-3">
-                              <span className="font-mono text-[11px] text-amber-400/80 whitespace-nowrap">
-                                {c.refNumber}
-                              </span>
-                              {c.escalationLevel > 0 && (
-                                <span className="ml-1.5 text-red-400 text-[10px] font-mono">
-                                  ↑L{c.escalationLevel}
-                                </span>
-                              )}
-                            </TableCell>
-                            <TableCell className="py-3">
-                              <span className="text-xs text-slate-300 capitalize">{c.category}</span>
-                            </TableCell>
-                            <TableCell className="py-3">
-                              <SeverityBadge severity={c.severity} />
-                            </TableCell>
-                            <TableCell className="py-3">
-                              <StatusBadge status={c.status} />
-                            </TableCell>
-                            <TableCell className="py-3 max-w-[160px]">
-                              <p className="text-[11px] text-slate-400 truncate leading-tight">
-                                {c.departmentHindi}
-                              </p>
-                            </TableCell>
-                            <TableCell className="py-3 max-w-[260px] hidden lg:table-cell">
-                              <p className="text-xs text-slate-500 truncate">{c.text}</p>
-                              {c.hindiUpdate && (
-                                <p className="text-[10px] text-slate-700 truncate mt-0.5">
-                                  {c.hindiUpdate}
-                                </p>
-                              )}
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* Right column — Decision Log */}
-          <Card className="bg-slate-900 border-slate-800 xl:sticky xl:top-6 xl:max-h-[calc(100vh-6rem)] flex flex-col">
-            <CardHeader className="pb-3 shrink-0">
-              <CardTitle className="text-xs font-semibold text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                <TrendingUp className="w-3.5 h-3.5 text-amber-400" />
-                Agent Decision Log
-                {data && (
-                  <span className="ml-auto font-mono text-[10px] text-slate-600 normal-case font-normal">
-                    {data.logs.length} entries
-                  </span>
-                )}
-              </CardTitle>
-            </CardHeader>
-            <Separator className="bg-slate-800 shrink-0" />
-            <CardContent className="p-0 overflow-y-auto flex-1">
-              {!data?.logs.length ? (
-                <p className="text-slate-600 text-sm text-center py-12 px-4">
-                  No decisions logged yet. File a complaint or seed demo data.
-                </p>
-              ) : (
-                <div className="divide-y divide-slate-800/80">
-                  {data.logs.map((log, i) => (
-                    <div
-                      key={log.id}
-                      className={cn(
-                        "px-4 py-4 text-xs space-y-2.5 transition-colors",
-                        i === 0 && "bg-amber-500/5 border-l-2 border-l-amber-500/40"
-                      )}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="font-mono text-slate-700 text-[10px]">
-                          complaint #{log.complaintId} ·{" "}
-                          {new Date(log.createdAt).toLocaleTimeString("en-IN", {
-                            hour: "2-digit", minute: "2-digit", second: "2-digit",
-                          })}
-                        </span>
-                        {i === 0 && (
-                          <span className="text-[10px] text-amber-400 font-mono bg-amber-500/10 px-1.5 py-0.5 rounded">
-                            LATEST
-                          </span>
-                        )}
-                      </div>
-                      <div className="space-y-1.5">
-                        <div className="flex gap-2">
-                          <span className="text-slate-600 font-mono text-[10px] w-[52px] shrink-0 pt-px">OBSERVE</span>
-                          <p className="text-slate-400 leading-relaxed">{log.observed}</p>
-                        </div>
-                        <div className="flex gap-2">
-                          <span className="text-amber-500/60 font-mono text-[10px] w-[52px] shrink-0 pt-px">DECIDE</span>
-                          <p className="text-slate-300 leading-relaxed">{log.decided}</p>
-                        </div>
-                        <div className="flex gap-2">
-                          <span className="text-emerald-500/60 font-mono text-[10px] w-[52px] shrink-0 pt-px">ACT</span>
-                          <p className="text-slate-400 leading-relaxed">{log.acted}</p>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
+            {/* File a grievance — the primary workflow */}
+            <section className="surface rounded-xl p-6">
+              <h2 className="font-display font-semibold text-lg tracking-wide">File a grievance</h2>
+              <p className="text-muted-foreground text-sm mt-1 mb-4">
+                Describe the issue in English or Hindi. The agent classifies it, routes it to
+                the right department, and tracks the SLA.
+              </p>
+              <Textarea
+                placeholder="e.g. Aliganj mein teen din se paani nahi aa raha, tanker bhi nahi aaya…"
+                value={complaintText}
+                onChange={e => setComplaintText(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submitComplaint(); }}
+                rows={4}
+                className="bg-background/50 border-panel-border text-foreground placeholder:text-muted-foreground/60 resize-none text-[15px] leading-relaxed rounded-lg focus-visible:ring-signal/25 focus-visible:border-signal/40"
+              />
+              <div className="flex items-center justify-between mt-4">
+                <span className="text-muted-foreground/70 text-xs">⌘ + Enter to submit</span>
+                <Button onClick={submitComplaint} disabled={submitting || !complaintText.trim()}
+                  className="h-10 px-5 rounded-md bg-signal hover:bg-signal/85 text-signal-foreground font-semibold glow-signal transition-colors disabled:opacity-50">
+                  {submitting ? "Processing…" : "Submit to Nivora"}
+                </Button>
+              </div>
+              {lastAction && (
+                <div className="flex items-center gap-2.5 mt-4 pt-4 border-t border-panel-border/60 text-sm">
+                  <span className="w-1.5 h-1.5 rounded-full bg-relief nv-live shrink-0" />
+                  <span className="text-foreground/75">{lastAction}</span>
                 </div>
               )}
-            </CardContent>
-          </Card>
+            </section>
+
+            {/* Incident list */}
+            <section className="surface rounded-xl overflow-hidden">
+              <div className="flex items-center justify-between px-6 py-4 border-b border-panel-border/60">
+                <h2 className="font-display font-semibold text-lg tracking-wide">Active grievances</h2>
+                {metrics && <span className="text-muted-foreground text-sm">{metrics.total} on board</span>}
+              </div>
+
+              {loading ? (
+                <p className="text-muted-foreground text-sm px-6 py-16 text-center">Establishing link to grievance queue…</p>
+              ) : !data?.complaints.length ? (
+                <div className="px-6 py-16 text-center">
+                  <p className="text-foreground/80 text-sm">Queue empty — pipeline standing by.</p>
+                  <p className="text-muted-foreground text-sm mt-1">
+                    <button onClick={seedData} className="text-signal hover:underline">Seed demo data</button>{" "}
+                    to load 15 sample grievances.
+                  </p>
+                </div>
+              ) : (
+                <ul className="divide-y divide-panel-border/50">
+                  {data.complaints.map(c => {
+                    const sla = slaLabel(c.slaDeadlineMs, liveNow);
+                    return (
+                      <li key={c.id} className="flex items-start gap-4 px-6 py-3.5 hover:bg-card/40 transition-colors">
+                        <span className={cn("mt-1.5 w-2 h-2 rounded-full shrink-0", severityDot[c.severity] ?? severityDot.medium)} />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-[15px] text-foreground/90 leading-snug line-clamp-1">{c.text}</p>
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-1 text-xs text-muted-foreground">
+                            <span className="font-mono text-muted-foreground/80">{c.refNumber}</span>
+                            <span className="text-muted-foreground/40">·</span>
+                            <span className="capitalize">{c.category}</span>
+                            <span className="text-muted-foreground/40">·</span>
+                            <span className="truncate max-w-[200px]">{c.departmentHindi}</span>
+                            {c.escalationLevel > 0 && <span className="text-alarm">· L{c.escalationLevel}</span>}
+                          </div>
+                        </div>
+                        <div className="flex flex-col items-end gap-1 shrink-0">
+                          <StatusPill status={c.status} />
+                          <span className={cn("font-mono text-xs", sla.tone)}>{sla.text}</span>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+          </div>
+
+          {/* ── Right column — Decision Log ───────────────────────────── */}
+          <section className="surface rounded-xl overflow-hidden xl:sticky xl:top-6 xl:max-h-[calc(100vh-3rem)] flex flex-col">
+            <div className="flex items-center gap-2 px-6 py-4 border-b border-panel-border/60 shrink-0">
+              <h2 className="font-display font-semibold text-lg tracking-wide">Agent decision log</h2>
+              <span className="w-1.5 h-1.5 rounded-full bg-relief nv-live" />
+              {data && <span className="ml-auto text-muted-foreground text-sm">{data.logs.length}</span>}
+            </div>
+
+            <div className="overflow-y-auto flex-1">
+              {!data?.logs.length ? (
+                <div className="px-6 py-16 text-center">
+                  <p className="text-foreground/80 text-sm">Awaiting incoming grievances.</p>
+                  <p className="text-muted-foreground text-sm mt-1">Agent routing pipeline standing by.</p>
+                </div>
+              ) : (
+                <ul className="divide-y divide-panel-border/40">
+                  {data.logs.map((log, i) => (
+                    <li key={log.id} className={cn("px-6 py-4", i === 0 && "bg-signal/[0.04] border-l-2 border-l-signal/50")}>
+                      <div className="flex items-center gap-2 mb-2.5 text-xs text-muted-foreground/70">
+                        <span className="font-mono">#{log.complaintId}</span>
+                        <span>·</span>
+                        <span className="font-mono">
+                          {new Date(log.createdAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
+                        </span>
+                        {i === 0 && <span className="ml-auto text-signal">Latest</span>}
+                      </div>
+                      <dl className="space-y-1.5 text-sm">
+                        <div className="flex gap-3">
+                          <dt className="w-14 shrink-0 text-muted-foreground/60">Observed</dt>
+                          <dd className="text-muted-foreground flex-1 leading-relaxed">{log.observed}</dd>
+                        </div>
+                        <div className="flex gap-3">
+                          <dt className="w-14 shrink-0 text-muted-foreground/60">Decided</dt>
+                          <dd className="text-foreground/90 flex-1 leading-relaxed">{log.decided}</dd>
+                        </div>
+                        <div className="flex gap-3">
+                          <dt className="w-14 shrink-0 text-muted-foreground/60">Acted</dt>
+                          <dd className="text-muted-foreground flex-1 leading-relaxed">{log.acted}</dd>
+                        </div>
+                      </dl>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </section>
         </div>
 
-        <footer className="mt-8 text-center text-slate-800 text-[10px] font-mono">
+        <footer className="mt-8 pt-5 border-t border-panel-border/60 text-muted-foreground/50 text-xs">
           Nivora · PS-07 · APL Qualifiers 2026 · @MonisMS
         </footer>
       </div>
