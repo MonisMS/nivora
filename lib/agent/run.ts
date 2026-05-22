@@ -44,6 +44,7 @@ async function runToolLoop(
     if (!msg.tool_calls?.length) break;
 
     for (const call of msg.tool_calls) {
+      if (call.type !== "function") continue;
       let result: unknown;
       try {
         const args = JSON.parse(call.function.arguments || "{}") as Record<string, unknown>;
